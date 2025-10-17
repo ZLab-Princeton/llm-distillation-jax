@@ -1,3 +1,5 @@
+# Modified by Taiming Lu, 2025
+# Original code © 2023–2025 Google LLC under the Apache 2.0 License
 """
 Copyright 2023 Google LLC
 

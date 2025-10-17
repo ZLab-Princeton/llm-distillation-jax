@@ -2,15 +2,13 @@
 
 This repository is a **fork of [MaxText](https://github.com/google/maxtext)** that implements knowledge distillation capabilities for large language model training. Built on top of MaxText's high-performance JAX/Flax framework, it provides commonly used distillation controls that allow you to transfer knowledge from teacher models to student models during training.
 
-**Original MaxText Repository:** https://github.com/google/maxtext  
-**License:** Apache License 2.0  
-**Framework:** JAX/Flax with XLA compilation
-
-
 ## About MaxText
 
 This repository is based on [MaxText](https://github.com/google/maxtext), Google's high-performance, highly scalable, open-source LLM training framework written in pure Python/JAX and targeting Google Cloud TPUs and GPUs. MaxText achieves high MFUs and scales from single host to very large clusters while staying simple and "optimization-free" thanks to the power of JAX and the XLA compiler.
 
+**Original MaxText Repository:** https://github.com/google/maxtext  
+**MaxText License:** Apache License 2.0  
+**Framework:** JAX/Flax with XLA compilation
 
 ## Differences from Original MaxText
 
