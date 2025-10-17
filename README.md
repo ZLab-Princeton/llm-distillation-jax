@@ -1,4 +1,28 @@
-This repository implements knowledge distillation capabilities for large language model training, built on top of MaxText. It provides commonly used distillation controls that allow you to transfer knowledge from teacher models to student models during training.
+# LLM Knowledge Distillation by MaxText-JAX
+
+This repository is a **fork of [MaxText](https://github.com/google/maxtext)** that implements knowledge distillation capabilities for large language model training. Built on top of MaxText's high-performance JAX/Flax framework, it provides commonly used distillation controls that allow you to transfer knowledge from teacher models to student models during training.
+
+## About MaxText
+
+This repository is based on [MaxText](https://github.com/google/maxtext), Google's high-performance, highly scalable, open-source LLM training framework written in pure Python/JAX and targeting Google Cloud TPUs and GPUs. MaxText achieves high MFUs and scales from single host to very large clusters while staying simple and "optimization-free" thanks to the power of JAX and the XLA compiler.
+
+**Original MaxText Repository:** https://github.com/google/maxtext  
+**MaxText License:** Apache License 2.0  
+**Framework:** JAX/Flax with XLA compilation
+
+## Differences from Original MaxText
+
+This fork extends the original MaxText with the following knowledge distillation features:
+
+- **Knowledge Distillation Loss**: Implements KL divergence between teacher and student logits
+- **Teacher Distribution Filtering**: Top-k and nucleus sampling for teacher probability pruning  
+- **Flexible Loss Mixing**: Configurable alpha parameter to blend cross-entropy and distillation losses
+- **Hard Label Support**: Option to use teacher's argmax predictions instead of soft distributions
+- **OTHER Bucket Handling**: Choice between renormalization and "OTHER" bucket for pruned probability mass
+- **Temperature Scaling**: Configurable temperature for knowledge distillation
+- **Backward Compatibility**: All distillation features are opt-in with sensible defaults
+
+The core MaxText functionality remains unchanged, ensuring compatibility with existing training pipelines while adding powerful distillation capabilities.
 
 ## Overview
 
@@ -257,6 +281,40 @@ class KlDivergenceBetweenLogitsTest(unittest.TestCase):                 # focuse
 
     self.assertAlmostEqual(actual_val, expected_val, places=6)          # verify helper matches analytic result
 ```
+
+## Results
+
+### Training Configurations
+
+The repository includes several distillation experiments with different alpha values (distillation strength):
+
+| Configuration | Model | Teacher | Student | Alpha | Temperature | Dataset |
+|---------------|-------|---------|---------|-------|-------------|---------|
+| `alpha_02` | Llama 3.1-1B | 25B Teacher | 1B Student | 0.2 | 1.0 | FineWeb-Edu |
+| `alpha_04` | Llama 3.1-1B | 25B Teacher | 1B Student | 0.4 | 1.0 | FineWeb-Edu |
+| `alpha_06` | Llama 3.1-1B | 25B Teacher | 1B Student | 0.6 | 1.0 | FineWeb-Edu |
+| `alpha_08` | Llama 3.1-1B | 25B Teacher | 1B Student | 0.8 | 1.0 | FineWeb-Edu |
+| `alpha_1` | Llama 3.1-1B | 25B Teacher | 1B Student | 1.0 | 1.0 | FineWeb-Edu |
+| `hard_alpha_1` | Llama 3.1-1B | 25B Teacher | 1B Student | 1.0 | 1.0 | FineWeb-Edu (Hard Labels) |
+
+### Training Parameters
+
+- **Model**: Llama 3.1-1B (student), 25B teacher
+- **Sequence Length**: 8,192 tokens
+- **Batch Size**: 4 per device
+- **Learning Rate**: 3e-4
+- **Steps**: 25,000
+- **Dataset**: FineWeb-Edu (educational subset)
+- **Hardware**: Google Cloud TPUs
+
+### Training Results
+
+The following figure shows example training curves demonstrating the knowledge distillation process:
+
+![Example Training Curves](pics/example_training.png)
+
+*Training loss curves showing convergence behavior across different distillation configurations. The curves demonstrate how different alpha values (distillation strength) affect the learning dynamics during knowledge distillation.*
+
 
 ## Key Features
 
