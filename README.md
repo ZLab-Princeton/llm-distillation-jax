@@ -33,6 +33,15 @@ MaxText's training loop now includes opt-in knowledge distillation (KD) controls
 - **Hard-label fallback** when you only trust the teacher's argmax predictions
 - **Backward compatibility** - all flags default to legacy values, so existing workloads behave exactly as before
 
+### Training Results
+
+The following figure shows example training curves demonstrating the knowledge distillation process:
+
+![Example Training Curves](pics/example_training.png)
+
+*Training loss curves showing convergence behavior across different distillation configurations. The curves demonstrate how different alpha values (distillation strength) affect the learning dynamics during knowledge distillation.*
+
+
 ## Quick Start
 
 ### Basic Knowledge Distillation
@@ -307,13 +316,6 @@ The repository includes several distillation experiments with different alpha va
 - **Dataset**: FineWeb-Edu (educational subset)
 - **Hardware**: Google Cloud TPUs
 
-### Training Results
-
-The following figure shows example training curves demonstrating the knowledge distillation process:
-
-![Example Training Curves](pics/example_training.png)
-
-*Training loss curves showing convergence behavior across different distillation configurations. The curves demonstrate how different alpha values (distillation strength) affect the learning dynamics during knowledge distillation.*
 
 
 ## Key Features
