@@ -1,0 +1,11 @@
+--- llm-distillation/MaxText/train.py	2025-10-17 15:50:26.881097000 -0400
++++ llm-distillation-run/MaxText/train.py	2025-10-21 02:50:53.982910000 -0400
+@@ -71,7 +71,7 @@
+ 
+ import MaxText as mt
+ # pylint: disable=too-many-positional-arguments
+-from jax.experimental import host_callback as hcb
++from jax import pure_callback as hcb
+ import orbax.checkpoint as ocp
+ from etils import epath
+ import omegaconf

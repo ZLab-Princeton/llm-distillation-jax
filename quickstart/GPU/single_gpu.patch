@@ -1,0 +1,245 @@
+--- llm-distillation/MaxText/train.py	2025-10-17 15:50:26.881097000 -0400
++++ llm-distillation-run/MaxText/train.py	2025-10-21 02:50:53.982910000 -0400
+@@ -71,7 +71,7 @@
+ 
+ import MaxText as mt
+ # pylint: disable=too-many-positional-arguments
+-from jax.experimental import host_callback as hcb
++from jax import pure_callback as hcb
+ import orbax.checkpoint as ocp
+ from etils import epath
+ import omegaconf
+@@ -873,15 +873,25 @@
+       config, model, mesh, state, state_mesh_shardings, train_step, eval_step, eval_data_iterator
+   )
+ 
+-  with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
+-    shaped_batch = maxtext_utils.get_shaped_batch(config)
+-    compiled = p_train_step.lower(state, shaped_batch, init_rng).compile()
++  # Initialize data loader before compilation so we can lower with a real batch
++  data_loader = DataLoader(config, mesh, data_iterator, recorder)
++
++  shardy_enabled = getattr(config, "shardy", True)
++  if shardy_enabled:
++    with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
++      batch_for_lowering = maxtext_utils.get_shaped_batch(config)
++      compiled = p_train_step.lower(state, batch_for_lowering, init_rng).compile()
++      compiled_stats = compiled.memory_analysis()
++      max_utils.print_compiled_memory_stats(compiled_stats)
++  else:
++    # No mesh/axis_rules context in single-GPU mode; lower with a real batch
++    batch_for_lowering = data_loader.load_next_batch()
++    compiled = p_train_step.lower(state, batch_for_lowering, init_rng).compile()
+     compiled_stats = compiled.memory_analysis()
+     max_utils.print_compiled_memory_stats(compiled_stats)
+-    
++
+   start_step = get_first_step(state)  # this is the start_step for training
+   prof = profiler.Profiler(config, offset_step=start_step)
+-  data_loader = DataLoader(config, mesh, data_iterator, recorder)
+   metric_logger = MetricLogger(config=config, learning_rate_schedule=learning_rate_schedule)
+ 
+   # Write train config params, num model params, and XLA flags to tensorboard
+@@ -896,7 +906,10 @@
+         # pylint: disable=not-callable
+         nextrng = jax.jit(jax.random.fold_in)(init_rng, step)
+         with maybe_record_goodput(recorder, GoodputEvent.STEP, step):
+-          with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
++          if shardy_enabled:
++            with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
++              state, metrics = p_train_step(state, example_batch, nextrng)
++          else:
+             state, metrics = p_train_step(state, example_batch, nextrng)
+ 
+       step_time_delta = datetime.datetime.now() - last_step_completion
+@@ -928,7 +941,10 @@
+         for eval_batch in eval_data_iterator:
+           if config.eval_steps > 0 and eval_step_count >= config.eval_steps:
+             break
+-          with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
++          if shardy_enabled:
++            with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
++              eval_metrics = p_eval_step(state, eval_batch, nextrng)
++          else:
+             eval_metrics = p_eval_step(state, eval_batch, nextrng)
+           metric_logger.record_eval_metrics(step, metrics=eval_metrics)
+           max_logging.log(f"Completed eval step {eval_step_count}")
+--- llm-distillation/MaxText/train_utils.py	2025-10-14 13:56:36.464653000 -0400
++++ llm-distillation-run/MaxText/train_utils.py	2025-10-21 02:41:16.571940000 -0400
+@@ -106,13 +106,21 @@
+     p_train_step = maxtext_utils.load_compiled(config, functional_train, state)
+     print("Loaded compiled function!", flush=True)
+   else:
+-    p_train_step = jax.jit(
+-        functional_train,
+-        in_shardings=in_shardings,
+-        out_shardings=out_shardings,
+-        static_argnums=static_argnums,
+-        donate_argnums=donate_argnums,
+-    )
++    # When sharding is disabled, omit shardings kwargs to avoid pjit path
++    if in_shardings is None and out_shardings is None:
++      p_train_step = jax.jit(
++          functional_train,
++          static_argnums=static_argnums,
++          donate_argnums=donate_argnums,
++      )
++    else:
++      p_train_step = jax.jit(
++          functional_train,
++          in_shardings=in_shardings,
++          out_shardings=out_shardings,
++          static_argnums=static_argnums,
++          donate_argnums=donate_argnums,
++      )
+ 
+   return p_train_step
+ 
+@@ -125,13 +133,20 @@
+ 
+   p_eval_step = None
+   if config.compiled_trainstep_file == "":
+-    p_eval_step = jax.jit(
+-        functional_eval,
+-        in_shardings=in_shardings,
+-        out_shardings=out_shardings,
+-        static_argnums=static_argnums,
+-        donate_argnums=donate_argnums,
+-    )
++    if in_shardings is None and out_shardings is None:
++      p_eval_step = jax.jit(
++          functional_eval,
++          static_argnums=static_argnums,
++          donate_argnums=donate_argnums,
++      )
++    else:
++      p_eval_step = jax.jit(
++          functional_eval,
++          in_shardings=in_shardings,
++          out_shardings=out_shardings,
++          static_argnums=static_argnums,
++          donate_argnums=donate_argnums,
++      )
+ 
+   return p_eval_step
+ 
+--- llm-distillation/MaxText/maxtext_utils.py	2025-10-14 13:56:36.356946000 -0400
++++ llm-distillation-run/MaxText/maxtext_utils.py	2025-10-21 02:47:19.052503000 -0400
+@@ -57,6 +57,9 @@
+ 
+ def get_input_data_sharding(config, mesh):
+   """Get the input data sharding for the model"""
++  # If sharding is disabled, return None so JIT uses default single-device sharding.
++  if not getattr(config, "shardy", True):
++    return None
+   return nn.logical_to_mesh_sharding(P(*config.input_data_sharding_logical_axes), mesh, config.logical_axis_rules)
+ 
+ 
+@@ -64,8 +67,13 @@
+   """Get the shardings (both state and data) for `train_step`."""
+   functional_train = functools.partial(train_step, model, config, state_mesh_shardings)
+   functional_train.__name__ = "train_step"
+-  in_shardings = (state_mesh_shardings, data_sharding, None)  # State, batch, rng
+-  out_shardings = (state_mesh_shardings, None)  # State, metrics
++  # For single-GPU no-shard mode, return None so callers can omit shardings kwargs to jax.jit.
++  if not getattr(config, "shardy", True):
++    in_shardings = None
++    out_shardings = None
++  else:
++    in_shardings = (state_mesh_shardings, data_sharding, None)  # State, batch, rng
++    out_shardings = (state_mesh_shardings, None)  # State, metrics
+   static_argnums = ()  # We partial out the static argnums of model and config
+   donate_argnums = 0  # This is the index of the state - we allow the compiler to make use of this memory.
+   return functional_train, in_shardings, out_shardings, static_argnums, donate_argnums
+@@ -75,8 +83,12 @@
+   """Get the shardings (both state and data) for `eval_step`."""
+   functional_eval = functools.partial(eval_step, model, config)
+   functional_eval.__name__ = "eval_step"
+-  in_shardings = (state_mesh_shardings, data_sharding, None)  # State, batch, rng
+-  out_shardings = None  # metrics
++  if not getattr(config, "shardy", True):
++    in_shardings = None  # callers omit shardings kwargs entirely
++    out_shardings = None
++  else:
++    in_shardings = (state_mesh_shardings, data_sharding, None)  # State, batch, rng
++    out_shardings = None  # metrics
+   static_argnums = ()  # We partial out the static argnums of model, config
+   donate_argnums = ()  # state will be kept instead of being donated in eval_step
+   return functional_eval, in_shardings, out_shardings, static_argnums, donate_argnums
+@@ -767,11 +779,15 @@
+       init_state_partial = functools.partial(init_initial_state, model, tx, config, is_training)
+       init_state_partial.__name__ = "initialize_state"
+       # pylint: disable=not-callable
+-      state = jax.jit(
+-          init_state_partial,
+-          in_shardings=None,
+-          out_shardings=state_mesh_shardings,
+-      )(rng)
++      if getattr(config, "shardy", True):
++        state = jax.jit(
++            init_state_partial,
++            in_shardings=None,
++            out_shardings=state_mesh_shardings,
++        )(rng)
++      else:
++        # In single-GPU/no-shard mode, avoid attaching sharding to state arrays
++        state = jax.jit(init_state_partial)(rng)
+       if raw_params:  # If we loaded a partial state, we need to merge it.
+         state = state.replace(params=raw_params)
+ 
+@@ -783,13 +799,19 @@
+ def get_abstract_state(model, tx, config, rng, mesh, is_training=True):
+   """Get a shaped abstraction of the state (including optimizer)"""
+   init_state_partial = functools.partial(init_initial_state, model, tx, config, is_training, rng)
+-
+-  with nn_partitioning.axis_rules(config.logical_axis_rules):
++  # If sharding is disabled (single-GPU), avoid requiring logical axis names.
++  shardy_enabled = getattr(config, "shardy", True)
++  if shardy_enabled:
++    with nn_partitioning.axis_rules(config.logical_axis_rules):
++      abstract_state = jax.eval_shape(init_state_partial)
++    state_logical_annotations = nn.get_partition_spec(abstract_state)
++  else:
++    # Evaluate shapes without partition rules and assign empty PartitionSpec to every leaf.
+     abstract_state = jax.eval_shape(init_state_partial)
++    state_logical_annotations = jax.tree_util.tree_map(lambda _: jax.sharding.PartitionSpec(), abstract_state)
+ 
+-  state_logical_annotations = nn.get_partition_spec(abstract_state)
+-
+-  state_mesh_shardings = nn.logical_to_mesh_sharding(state_logical_annotations, mesh, config.logical_axis_rules)
++  logical_axis_rules = config.logical_axis_rules if shardy_enabled else ()
++  state_mesh_shardings = nn.logical_to_mesh_sharding(state_logical_annotations, mesh, logical_axis_rules)
+   if is_training and config.optimizer_memory_host_offload:
+     opt_state = jax.tree_util.tree_map(lambda x: x.with_memory_kind(kind="pinned_host"), state_mesh_shardings.opt_state)
+     state_mesh_shardings = state_mesh_shardings.replace(opt_state=opt_state)
+@@ -803,11 +825,13 @@
+     params = jax.tree_util.tree_map_with_path(move, state_mesh_shardings.params)
+     state_mesh_shardings = state_mesh_shardings.replace(params=params)
+ 
+-  abstract_sharded_state = jax.jit(init_state_partial, in_shardings=None, out_shardings=state_mesh_shardings).eval_shape()
++  abstract_sharded_state = jax.jit(
++      init_state_partial, in_shardings=None, out_shardings=state_mesh_shardings
++  ).eval_shape()
+ 
+   unboxed_abstract_sharded_state = max_utils.unbox_logicallypartioned(abstract_sharded_state)
+   # Initialization
+-  with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
++  with mesh, nn_partitioning.axis_rules(logical_axis_rules):
+     state_mesh_annotations = nn.logical_to_mesh(state_logical_annotations)
+   return (
+       unboxed_abstract_sharded_state,
+--- llm-distillation/MaxText/data_loader.py	2025-10-14 13:56:36.306344738 -0400
++++ llm-distillation-run/MaxText/data_loader.py	2025-10-21 02:19:29.998686636 -0400
+@@ -48,7 +48,11 @@
+         else:
+           example_batch = next(self.data_iterator)
+         # Reshard data from loaded sharding to performant activation sharding
+-        self.last_batch = jax.lax.with_sharding_constraint(example_batch, self.input_data_shardings)
++        # If sharding is disabled (single-GPU), skip sharding constraint.
++        if self.input_data_shardings is not None:
++          self.last_batch = jax.lax.with_sharding_constraint(example_batch, self.input_data_shardings)
++        else:
++          self.last_batch = example_batch
+         self.check_example_batch()
+       except Exception as e:  # pylint: disable=broad-except
+         if "StopIteration" in str(e):

@@ -1,0 +1,17 @@
+This product includes software developed by Google LLC and contributors.
+Modifications © 2025 ZLab Pinceton and Taiming Lu.
+
+MaxText Knowledge Distillation Fork
+
+This project is a fork of MaxText (https://github.com/google/maxtext)
+Copyright 2024 Google LLC. Licensed under the Apache License, Version 2.0.
+
+This fork extends MaxText with knowledge distillation capabilities for large language model training.
+The original MaxText framework provides the foundation for high-performance LLM training on TPUs and GPUs.
+
+Original MaxText Repository: https://github.com/google/maxtext
+Original MaxText License: Apache License 2.0
+Original MaxText Copyright: 2024 Google LLC
+
+This fork maintains compatibility with the Apache 2.0 license and adds specialized
+knowledge distillation features while preserving all original MaxText functionality.
